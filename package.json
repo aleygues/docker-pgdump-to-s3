@@ -1,0 +1,16 @@
+{
+  "name": "docker-postgres-dump",
+  "version": "1.0.0",
+  "main": "index.js",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.5.5",
+    "ts-node": "^10.9.2",
+    "typescript": "^5.6.2"
+  },
+  "dependencies": {
+    "@aws-sdk/client-s3": "^3.654.0",
+    "cron": "^3.1.7",
+    "date-fns": "^4.1.0"
+  }
+}
