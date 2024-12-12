@@ -226,6 +226,17 @@ async function dump() {
         }
       } catch {
         console.error(`Unable to push ${path}`);
+      } finally {
+        try {
+          fs.rmSync(path, { force: true });
+          console.log(
+            `Dump of container ${container.id} has been deleted locally`
+          );
+        } catch (e) {
+          console.error(
+            `Unable to delete locally dump of container ${container.id}`
+          );
+        }
       }
     } catch (e) {
       console.debug(`Error is: `, e);
