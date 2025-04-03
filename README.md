@@ -1,4 +1,4 @@
-# pgdumt-to-s3
+# pgdump-to-s3
 
 This repo (and its built Docker image) should be used to generate PostreSQL dumps (using `pgdump`) automatically and upload them to a remote location (using S3 API). 
 
