@@ -2,6 +2,7 @@ import { exec } from "child_process";
 import { format, subDays } from "date-fns";
 import { CronJob } from "cron";
 import fs from "fs";
+import path from "path";
 import {
   S3Client,
   PutObjectCommand,
@@ -42,13 +43,13 @@ const s3 =
 
 // start cron job (run every hour)
 new CronJob(
-  "*/15 * * * *",
+  "*/1 * * * *",
   dump,
   () => {
     console.log(`Dump job has been completed`);
   },
   false,
-  "Europe/Paris"
+  "Europe/Paris",
 ).start();
 
 // run a sh command as a Promise, it returns a promise with the output
@@ -69,12 +70,23 @@ function sh(command: string, cwd: string) {
 
 // run the dump routine
 async function dump() {
+  const routineDatetime = new Date().toISOString();
+  const routinePath = path.join(DUMPS_PATH, routineDatetime);
+
+  // clean dumps folder
+  try {
+    await clearDumpsFolder();
+    console.log(`Dumps folder has been cleaned`);
+  } catch {
+    console.error(`Unable to clean dumps folder`);
+  }
+
   // get all containers ids with fr.aleygues.pgdump label
   let containersIds: string[] = [];
   {
     const output = (await sh(
       "docker ps -q -f 'label=fr.aleygues.pgdump'",
-      "."
+      ".",
     )) as string;
     containersIds = output
       .split("\n")
@@ -98,7 +110,7 @@ async function dump() {
   {
     const output = (await sh(
       `docker inspect ${containersIds.join(" ")}`,
-      "."
+      ".",
     )) as string;
     const json = JSON.parse(output);
 
@@ -116,7 +128,7 @@ async function dump() {
         !labels["fr.aleygues.pgdump.username"]
       ) {
         console.error(
-          `Container ${container.Id} must have pgdump.username label`
+          `Container ${container.Id} must have pgdump.username label`,
         );
         continue;
       }
@@ -126,7 +138,7 @@ async function dump() {
         !labels["fr.aleygues.pgdump.prefix"]
       ) {
         console.error(
-          `Container ${container.Id} must have pgdump.prefix label`
+          `Container ${container.Id} must have pgdump.prefix label`,
         );
         continue;
       }
@@ -140,11 +152,11 @@ async function dump() {
       if (
         typeof labels["fr.aleygues.pgdump.frequency"] === "string" &&
         ["daily", "hourly", "weekly"].includes(
-          labels["fr.aleygues.pgdump.frequency"]
+          labels["fr.aleygues.pgdump.frequency"],
         ) === false
       ) {
         console.error(
-          `Container ${container.Id} uses a frequency that does not exist (${labels["fr.aleygues.pgdump.frequency"]})`
+          `Container ${container.Id} uses a frequency that does not exist (${labels["fr.aleygues.pgdump.frequency"]})`,
         );
         continue;
       }
@@ -154,7 +166,7 @@ async function dump() {
         /^[0-9]+$/.test(labels["fr.aleygues.pgdump.daysRetention"]) === false
       ) {
         console.error(
-          `Container ${container.Id} uses an invalid pgdump.daysRetention value`
+          `Container ${container.Id} uses an invalid pgdump.daysRetention value`,
         );
         continue;
       }
@@ -183,7 +195,7 @@ async function dump() {
     // we should check if we need to generate the dump
     const searchKey = `pgdump_${container.prefix}_${format(
       new Date(),
-      container.frequency === "daily" ? DAILY_FORMAT : HOURLY_FORMAT
+      container.frequency === "daily" ? DAILY_FORMAT : HOURLY_FORMAT,
     )}`;
 
     if (remoteDumps.find((dump) => dump.startsWith(searchKey))) {
@@ -191,50 +203,53 @@ async function dump() {
     }
 
     try {
-      const path = `/dumps/pgdump_${container.prefix}_${format(
-        new Date(),
-        DATETIME_FORMAT
-      )}.sql`;
+      if (!fs.existsSync(routinePath)) {
+        fs.mkdirSync(routinePath, { recursive: true });
+      }
+      const dumpPath = path.join(
+        routinePath,
+        `pgdump_${container.prefix}_${format(new Date(), DATETIME_FORMAT)}.sql`,
+      );
       await sh(
-        `docker exec ${container.id} pg_dumpall -c -U ${container.username} > ${path}`,
-        "."
+        `docker exec ${container.id} pg_dumpall -c -U ${container.username} > "${dumpPath}"`,
+        ".",
       );
       console.log(
-        `Dump of container ${container.id} has been generated, pushing`
+        `Dump of container ${container.id} has been generated, pushing`,
       );
 
       // here we may think it's OK!
       try {
-        await pushDump(path, container.prefix, container.daysRetention);
+        await pushDump(dumpPath, container.prefix, container.daysRetention);
         console.log(
-          `Dump of container ${container.id} has been pushed, cleaning`
+          `Dump of container ${container.id} has been pushed, cleaning`,
         );
 
         try {
           await clearDumps(
             container.prefix,
             container.daysRetention,
-            remoteDumps
+            remoteDumps,
           );
           console.log(
-            `Dumps starting with pgdump_${container.prefix} and older than ${container.daysRetention} days has been deleted`
+            `Dumps starting with pgdump_${container.prefix} and older than ${container.daysRetention} days has been deleted`,
           );
         } catch {
           console.error(
-            `Unable to clean old dumps for prefix ${container.prefix} and days retention of ${container.daysRetention}`
+            `Unable to clean old dumps for prefix ${container.prefix} and days retention of ${container.daysRetention}`,
           );
         }
       } catch {
-        console.error(`Unable to push ${path}`);
+        console.error(`Unable to push ${dumpPath}`);
       } finally {
         try {
-          fs.rmSync(path, { force: true });
+          fs.rmSync(dumpPath, { force: true });
           console.log(
-            `Dump of container ${container.id} has been deleted locally`
+            `Dump of container ${container.id} has been deleted locally`,
           );
         } catch (e) {
           console.error(
-            `Unable to delete locally dump of container ${container.id}`
+            `Unable to delete locally dump of container ${container.id}`,
           );
         }
       }
@@ -312,16 +327,16 @@ async function pushDump(path: string, prefix: string, daysRetention: number) {
 async function clearDumps(
   prefix: string,
   daysRetention: number,
-  remoteDumps: string[]
+  remoteDumps: string[],
 ) {
   const fullPrefixWithUnderscore = `pgdump_${prefix}_`;
   const dumps = remoteDumps.filter((dump) =>
-    dump.startsWith(fullPrefixWithUnderscore)
+    dump.startsWith(fullPrefixWithUnderscore),
   );
 
   const minDatetime = `${fullPrefixWithUnderscore}${format(
     subDays(new Date(), daysRetention),
-    DATETIME_FORMAT
+    DATETIME_FORMAT,
   )}.sql`;
 
   const dumpsToDelete = dumps.filter((dump) => dump < minDatetime);
@@ -343,6 +358,28 @@ async function clearDumps(
       (result.$metadata.httpStatusCode && result.$metadata.httpStatusCode > 299)
     ) {
       throw new Error();
+    }
+  }
+}
+
+async function clearDumpsFolder() {
+  const entries = fs.readdirSync(DUMPS_PATH, { withFileTypes: true });
+  const folders = entries
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => entry.name)
+    .sort();
+
+  // Keep the most recent existing folder (very previous run) and delete older ones (N-1, etc.)
+  const foldersToDelete = folders.slice(0, -1);
+
+  for (const folder of foldersToDelete) {
+    try {
+      fs.rmSync(path.join(DUMPS_PATH, folder), {
+        recursive: true,
+        force: true,
+      });
+    } catch (e) {
+      console.error(`Unable to delete ${folder} in dumps folder`);
     }
   }
 }
